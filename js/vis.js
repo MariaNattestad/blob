@@ -1878,6 +1878,7 @@ function feature_row_click(d) {
 	}
 	if (!_warnings.large_features && d.end - d.start > 1000) {
 		user_message("Warning", "Be careful with long features as loading too many reads can cause out-of-memory errors.")
+		_warnings.large_features = true;
 	}
 	flexible_bam_fetch([{"chrom":d.chrom,"start":d.start,"end":d.end}]);
 }
@@ -1891,6 +1892,7 @@ function variant_row_click(d) {
 	}
 	if (!_warnings.large_features && d.end - d.start > 1000) {
 		user_message("Warning", "Be careful with large regions as loading too many reads can cause out-of-memory errors.")
+		_warnings.large_features = true;
 	}
 	flexible_bam_fetch([{"chrom":d.chrom,"start":d.start,"end":d.end}]);
 
