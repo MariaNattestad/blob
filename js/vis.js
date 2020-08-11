@@ -5047,44 +5047,61 @@ class Bam
 
 	constructor(bamFile, baiFile)
 	{
-		// Support File objects
 		if(bamFile instanceof File && baiFile instanceof File)
-		{
 			this.source = "file";
-			this.bamFile.file = bamFile;
-			this.baiFile.file = baiFile;
-		}
-
-		// Support URLs
 		else if(typeof bamFile === "string" && typeof baiFile === "string")
-		{
 			this.source = "url";
-			this.bamFile.path = bamFile;
-			this.baiFile.path = baiFile;
-		}
-
-		// Otherwise, input error
 		else throw "Can only mount URLs or File objects";
+
+		this.bamFile.file = bamFile;
+		this.baiFile.file = baiFile;
 	}
 
 	// -------------------------------------------------------------------------
 	// Mount URLs and File objects
 	// -------------------------------------------------------------------------
 
-	mount()
+	checkCORS(url)
 	{
-		if(this.source == "file")
+		return fetch(url, {
+			method: "GET",
+			headers: { "Range": "Bytes=10-20" }
+		}).then(() => {
+			console.log("Successfully fetched bytes 10-20 from URL; will query URL directly.")
+		}).catch(error => {
+			console.error(`Can't fetch bytes 10-20 from URL; switching to proxy: ${error}`)
+			url = URL_PROXY + url;
+		}).then(() => {
+			return url;
+		});
+	}
+
+	async mount()
+	{
+		if(this.source == "url")
 		{
-			return Promise.all([
-				// Mount .bam file
-				Aioli.mount(this.bamFile.file).then(f => this.bamFile = f),
-				// Mount .bai file
-				Aioli.mount(this.baiFile.file).then(f => this.baiFile = f)				
-			]).then(() => this.getHeader());
+			// To mount URLs, first check for CORS and use proxy if CORS is not supported
+			await Promise.all([
+				this.checkCORS(this.bamFile.file).then(url => this.bamFile.file = url),
+				this.checkCORS(this.baiFile.file).then(url => this.baiFile.file = url)
+			]);
+
+			// Download the whole BAI file. If we don't do that manually, Emscripten will
+			// end up downloading it in small chunks, which is slower
+			var baiBlob = await fetch(this.baiFile.file).then(r => r.blob());
+			baiBlob.name = this.baiFile.file.split("//").pop().replace(/\//g, "-");
+			this.baiFile.file = baiBlob;
 		}
 
-		if(this.source == "url")
-			return this.getHeader();
+		return this.mountBAM();
+	}
+
+	mountBAM()
+	{
+		return Promise.all([
+			Aioli.mount(this.bamFile.file).then(f => this.bamFile = f),
+			Aioli.mount(this.baiFile.file).then(f => this.baiFile = f)
+		]).then(() => this.getHeader());
 	}
 
 	// -------------------------------------------------------------------------
@@ -5093,40 +5110,45 @@ class Bam
 
 	getHeader()
 	{
-		// Get header from file in the browser
-		if(this.source == "file") {
-			console.warn(this.bamFile)
-			return _samtools.exec(`view -H ${this.bamFile.path}`)
-							.then(d => this.parseHeader(d.stdout));
-		}
+		console.warn(this.bamFile)
+		return _samtools.exec(`view -H ${this.bamFile.path}`)
+						.then(d => this.parseHeader(d.stdout));
+	}
 
-		// Get header from URL using iobio
-		if(this.source == "url") {
-			return Bam.iobio("alignmentHeader", { url: this.bamFile.path })
-					  .then(d => this.parseHeader(d));
-		}
+	getCoverage(chrom, start, end)
+	{
+		// Can't run samtools coverage on URLs since BAI files are stored in a different folder,
+		// and there's no way to specify a custom BAI path with this command
+		if(this.source == "url")
+			return new Promise((resolve, reject) => resolve({}));
+
+		// Documentation: http://www.htslib.org/doc/samtools-coverage.html
+		console.time("samtools coverage");
+		return _samtools.exec(`coverage ${this.bamFile.path} -r ${chrom}:${start}-${end} --no-header`).then(d => {
+			console.timeEnd("samtools coverage");
+
+			var stats = d.stdout.split("\t");
+			return {
+				rname: stats[0],
+				startpos: +stats[1],
+				endpos: +stats[2],
+				numreads: +stats[3],
+				covbases: stats[4],
+				coverage: stats[5],
+				meandepth: stats[6],
+				meanbaseq: stats[7],
+				meanmapq: stats[8],
+			};
+		});
 	}
 
 	getReads(chrom, start, end)
 	{
-		// Get reads from file in the browser
-		if(this.source == "file") {
-			var region = `${chrom}:${start}-${end}`,
-				subsampling = "";
-
-			// Use "samtools coverage" to estimate how many bases we would need to load (in contrast,
-			// using "samtools view -c" would only tell us the number of reads, which is misleading
-			// for long-read data!). This is generally much much faster than trying to load the region
-			// so for most cases, the additional runtime is negligible.
-			console.time("samtools coverage");
-			return _samtools.exec(`coverage ${this.bamFile.path} -r ${region} --no-header`).then(d => {
-				console.timeEnd("samtools coverage");
-
-				// Estimate how much data we're looking at in the selected region, and subsample if
-				// the user is trying to load too much data. Col #5 = "covbases", Col #7 = "meandepth".
-				// See http://www.htslib.org/doc/samtools-coverage.html for documentation.
-				var stats = d.stdout.split("\t"),
-					sampling = Math.round(1e6 / (+stats[4] * +stats[6]) * 100) / 100;
+		return this.getCoverage(chrom, start, end)
+			.then(stats => {
+				// Use the subsampling option if users are about to load a lot of data
+				var subsampling = "";
+				var sampling = Math.round(1e6 / (stats.covbases * stats.meandepth) * 100) / 100;
 				if(sampling < 1) {
 					sampling = prompt(`⚠️ Warning\n\nThis region contains a lot of data and may crash your browser.\n\nEnter the fraction of reads to sample (use the default if you're not sure):`, sampling)
 					subsampling = ` -s ${sampling}`;
@@ -5139,23 +5161,10 @@ class Bam
 				// _samtools.cat(). Based on a few tests run on Illumina and PacBio data, using the command
 				// "samtools view -o" followed by "cat" is ~2-3X faster than simply using "samtools view".
 				console.time("samtools view");
-				return _samtools.exec(`view${subsampling} -o /tmp/reads.sam ${this.bamFile.path} ${region}`)
+				return _samtools.exec(`view${subsampling} -o /tmp/reads.sam -X ${this.bamFile.path} ${this.baiFile.path} ${chrom}:${start}-${end}`)
 					.then(() => _samtools.cat("/tmp/reads.sam"))
 					.then(d => this.parseReads(d));
 			});
-		}
-
-		// Get reads from URL using iobio
-		if(this.source == "url") {
-			return Bam.iobio("viewAlignments", {
-				url: this.bamFile.path,
-				regions: [{
-					name: chrom,
-					start: start,
-					end: end
-				}]
-			}).then(d => this.parseReads(d));
-		}
 	}
 
 	// -------------------------------------------------------------------------
