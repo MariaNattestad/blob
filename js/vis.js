@@ -8,6 +8,7 @@ ga('send', 'pageview');
 // URLs
 var URL_SANDBOX = "https://api.sandbox.bio/v0";
 var URL_SANDBOX_STORE = URL_SANDBOX + "/store/";
+var URL_PROXY = "https://proxy.genomeribbon.com/?url=";
 
 // Calculations for drawing and spacing out elements on the screen
 var _padding = {};
