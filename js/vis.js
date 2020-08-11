@@ -5040,8 +5040,8 @@ function resizeWindow() {
 
 class Bam
 {
-	bamFile = {};                    // { path: "<URL> or </data/mount/path.bam>", file: <File object if any> }
-	baiFile = {};                    // { path: "<URL> or </data/mount/path.bam>", file: <File object if any> }
+	bamFile = {};                    // { file: <File or Blob or URL string>, path: "/some/path.bam" }
+	baiFile = {};                    // { file: <File or Blob or URL string>, path: "/some/path.bai" }
 	source = null;                   // "url" or "file"
 	header = { sq: null, toStr: ""}  // BAM header
 	ready = false;                   // True once .bam file + header is loaded
@@ -5245,25 +5245,6 @@ class Bam
 			console.timeEnd("samtools view");
 			resolve(reads);
 		});
-	}
-
-	// -------------------------------------------------------------------------
-	// API calls to iobio
-	// -------------------------------------------------------------------------
-
-	static iobio(endpoint, data)
-	{
-		return fetch(`https://backend.iobio.io/${endpoint}`, {
-			// API expects text/plain content-type
-			headers: { "Content-Type": "text/plain" },
-			method: "post",
-			body: JSON.stringify(data)
-		}).catch(d => {
-			alert("Could not connect to iobio server. Please try again later.");
-        	console.error(d);
-		}).then(d => {
-			return d.text();
-    	});
 	}
 }
 
