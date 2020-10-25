@@ -43,6 +43,7 @@ var _focal_region; // {chrom,start,end}:  one region that the bam file, variants
 
 // Reading bam file
 var _samtools = null;
+var _automation_running = false;
 var _Bam = undefined;
 var _Ref_sizes_from_header = {};
 
@@ -117,6 +118,7 @@ _settings.automation_mode = true;
 _settings.automation_reads_split_near_variant_only = true;
 _settings.automation_margin_for_split = 1000;
 _settings.automation_max_reads_to_screenshot = 5;
+_settings.automation_subsample = true;
 
 _settings.add_coordinates_to_figures = false;
 
@@ -4822,6 +4824,7 @@ var log_number_reads_found = [];
 function run_automation() {
 	console.log("run_automation clicked");
 	_variant_automation_counter = -1;
+	_automation_running = true;
 
 	if (_Bam == undefined) {
 		user_message("Error","No bam file loaded");
@@ -4848,6 +4851,10 @@ d3.select("#automation_max_reads_to_screenshot").on("change", function() {
 
 $('#automation_pick_split_reads').change(function() {
 	_settings.automation_reads_split_near_variant_only = this.checked;
+});
+
+$('#automation_subsample').change(function() {
+	_settings.automation_subsample = this.checked;
 });
 
 $('#add_coordinates_to_figures').change(function() {
@@ -4884,6 +4891,7 @@ function load_next_variant() {
 		d3.select("#permalink_name").property("value", _prefix_for_automated_images + "_" + _Bedpe[_variant_automation_counter].name);
 		wait_save_and_repeat(0);
 	} else {
+		_automation_running = false;
 		user_message("Success","DONE with automation!")
 		audio.play();
 		console.log("Finished: Number of split reads found by variant:");
@@ -5125,9 +5133,16 @@ class Bam
 
 		// Documentation: http://www.htslib.org/doc/samtools-coverage.html
 		console.time("samtools coverage");
+		// Use "samtools coverage" to estimate how many bases we would need to load (in contrast,
+		// using "samtools view -c" would only tell us the number of reads, which is misleading
+		// for long-read data!). This is generally much much faster than trying to load the region
+		// so for most cases, the additional runtime is negligible.
 		return _samtools.exec(`coverage ${this.bamFile.path} -r ${chrom}:${start}-${end} --no-header`).then(d => {
 			console.timeEnd("samtools coverage");
 
+			// Estimate how much data we're looking at in the selected region, and subsample if
+			// the user is trying to load too much data. Col #5 = "covbases", Col #7 = "meandepth".
+			// See http://www.htslib.org/doc/samtools-coverage.html for documentation.
 			var stats = d.stdout.split("\t");
 			return {
 				rname: stats[0],
@@ -5150,8 +5165,9 @@ class Bam
 				// Use the subsampling option if users are about to load a lot of data
 				var subsampling = "";
 				var sampling = Math.round(1e6 / (stats.covbases * stats.meandepth) * 100) / 100;
-				if(sampling < 1) {
-					sampling = prompt(`⚠️ Warning\n\nThis region contains a lot of data and may crash your browser.\n\nEnter the fraction of reads to sample (use the default if you're not sure):`, sampling)
+				if(sampling < 1 && (_automation_running && !automation_subsample)) {
+					if(!_automation_running)
+						sampling = prompt(`⚠️ Warning\n\nThis region contains a lot of data and may crash your browser.\n\nEnter the fraction of reads to sample (use the default if you're not sure):`, sampling)
 					subsampling = ` -s ${sampling}`;
 					user_message("Warning", `Region contains a lot of data; sampling ${Math.round(sampling * 100)}% of reads.`);
 				}
@@ -5225,7 +5241,7 @@ class Bam
 					cigar: readInfo[5]
 				};
 
-				// Parse SA tag: In the SAM format, column 11 = readInfo[10] = qual, column 12 = readInfo[11] = start of tags
+				// Parse SA tag: In the SAM format, tags start at index 11
 				for (var i = 11; i < readInfo.length; i++) {
 					if (readInfo[i].substr(0, 2) == "SA") {
 						record.SA = readInfo[i].split(":")[2];
